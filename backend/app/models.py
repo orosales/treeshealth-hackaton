@@ -35,6 +35,19 @@ class AerialImage(BaseModel):
     bbox: list[float]
 
 
+class AerialTreeDetection(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    x_ratio: float = Field(ge=0, le=1)
+    y_ratio: float = Field(ge=0, le=1)
+    confidence: float = Field(ge=0, le=1)
+    evidence: str
+
+
+class AerialTreeDetections(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    detections: list[AerialTreeDetection] = Field(max_length=4)
+
+
 class StreetViewImage(BaseModel):
     source: str = "Google Street View (historical)"
     capture_date: str | None = None
@@ -73,11 +86,17 @@ class AreaCandidate(BaseModel):
     summary: str
     confidence: float
     street_view_date: str | None = None
+    source: Literal["HRM_INVENTORY", "AERIAL_DETECTION"] = "HRM_INVENTORY"
+    discovery_evidence: str | None = None
+    street_view_available: bool = False
 
 
 class AreaScreeningResponse(BaseModel):
     bounds: AreaBounds
     candidates_found: int
     candidate_source: str
+    inventory_candidates_found: int = 0
+    aerial_candidates_found: int = 0
+    aerial_discovery_status: str = "not_run"
     screened: list[AreaCandidate]
     disclaimer: str

@@ -6,6 +6,7 @@ import type { AreaCandidate } from './types'
 interface Props { location: { latitude: number; longitude: number } | null; onPick: (location: { latitude: number; longitude: number }) => void; onCandidatePick: (candidate: AreaCandidate) => void; areaMode: boolean; areaCorners: L.LatLng[]; onAreaCorner: (corner: L.LatLng) => void; candidates: AreaCandidate[] }
 const HALIFAX: [number, number] = [44.6488, -63.5752]
 const severity = { HIGH: 3, MEDIUM: 2, LOW: 1 }
+const priorityColor = { HIGH: '#b6443c', MEDIUM: '#c87816', LOW: '#2c8560' }
 
 function clusterCandidates(candidates: AreaCandidate[], zoom: number) {
   if (zoom >= 15) return candidates.map(candidate => [candidate])
@@ -58,7 +59,8 @@ export function MapPicker({ location, onPick, onCandidatePick, areaMode, areaCor
         L.marker(centre, { icon }).bindTooltip(`${group.length} inspection leads — click to zoom in`).on('click', () => map.current?.flyTo(centre, Math.min(map.current.getZoom() + 2, 16))).addTo(candidateLayer.current!)
         return
       }
-      L.circleMarker(centre, { radius: highest.priority === 'HIGH' ? 11 : 8, color: highest.priority === 'HIGH' ? '#a7332b' : highest.priority === 'MEDIUM' ? '#b76c1c' : '#2c7651', weight: 3, fillColor: '#fff', fillOpacity: 1, className: `risk-marker ${highest.priority.toLowerCase()}` }).bindPopup(`<b>${highest.priority} inspection lead</b><br>Click marker to view historical Street View.<br>${highest.summary}`).on('click', () => onCandidatePickRef.current(highest)).addTo(candidateLayer.current!)
+      const discovered = highest.source === 'AERIAL_DETECTION'
+      L.circleMarker(centre, { radius: highest.priority === 'HIGH' ? 11 : 9, color: discovered ? priorityColor[highest.priority] : '#ffffff', weight: 3, dashArray: discovered ? '4 3' : undefined, fillColor: discovered ? '#ffffff' : priorityColor[highest.priority], fillOpacity: 1, className: `risk-marker ${highest.priority.toLowerCase()} ${discovered ? 'aerial-source' : 'inventory-source'}` }).bindPopup(`<b>${highest.priority} inspection lead</b><br>${discovered ? 'Possible tree detected in aerial imagery' : 'Halifax public-tree inventory asset'}${highest.street_view_available ? ' · Street View available' : ''}<br>${highest.summary}`).on('click', () => onCandidatePickRef.current(highest)).addTo(candidateLayer.current!)
     })
   }, [candidates, zoom])
   return <div ref={mapElement} className="map" aria-label="Interactive Halifax location map" />

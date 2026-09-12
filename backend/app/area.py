@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import httpx
 
-from .models import AreaBounds
+from math import asin, cos, radians, sin, sqrt
+
+from .models import AerialTreeDetection, AreaBounds
 
 HALIFAX_PUBLIC_TREES_URL = "https://services2.arcgis.com/11XBiaBYA9Ep0yNJ/arcgis/rest/services/Public_Trees/FeatureServer/0/query"
 MAX_CANDIDATES = 8
+MAX_AERIAL_CANDIDATES = 4
 
 
 def validate_bounds(bounds: AreaBounds) -> None:
@@ -41,3 +44,39 @@ async def public_trees(bounds: AreaBounds) -> tuple[int, list[tuple[float, float
                 attributes.get("FCODE"), attributes.get("WIRES"),
             ))
     return total, trees
+
+
+def distance_metres(first: tuple[float, float], second: tuple[float, float]) -> float:
+    lat1, lon1 = map(radians, first)
+    lat2, lon2 = map(radians, second)
+    dlat, dlon = lat2 - lat1, lon2 - lon1
+    value = sin(dlat / 2) ** 2 + cos(lat1) * cos(lat2) * sin(dlon / 2) ** 2
+    return 6_371_000 * 2 * asin(sqrt(value))
+
+
+def aerial_candidate_locations(
+    detections: list[AerialTreeDetection],
+    image_bbox: list[float],
+    selected_bounds: AreaBounds,
+    inventory: list[tuple[float, float, str | None, str | None, str | None]],
+    minimum_inventory_distance_m: float = 18,
+) -> list[tuple[float, float, str]]:
+    west, south, east, north = image_bbox
+    locations: list[tuple[float, float, str]] = []
+    inventory_points = [(tree[0], tree[1]) for tree in inventory]
+    for detection in sorted(detections, key=lambda item: item.confidence, reverse=True):
+        longitude = west + detection.x_ratio * (east - west)
+        latitude = north - detection.y_ratio * (north - south)
+        point = (latitude, longitude)
+        if not (selected_bounds.south <= latitude <= selected_bounds.north and selected_bounds.west <= longitude <= selected_bounds.east):
+            continue
+        if detection.confidence < 0.65:
+            continue
+        if any(distance_metres(point, existing) < minimum_inventory_distance_m for existing in inventory_points):
+            continue
+        if any(distance_metres(point, (existing[0], existing[1])) < minimum_inventory_distance_m for existing in locations):
+            continue
+        locations.append((latitude, longitude, detection.evidence))
+        if len(locations) == MAX_AERIAL_CANDIDATES:
+            break
+    return locations

@@ -9,11 +9,11 @@ from fastapi.responses import Response
 from fastapi.staticfiles import StaticFiles
 from dotenv import load_dotenv
 
-from .geonova import get_aerial_image
+from .geonova import get_aerial_image, get_area_aerial_image
 from .models import AnalysisResponse, AreaBounds, AreaCandidate, AreaScreeningResponse
-from .area import public_trees, validate_bounds
+from .area import MAX_AERIAL_CANDIDATES, MAX_CANDIDATES, aerial_candidate_locations, public_trees, validate_bounds
 from .priority import DISCLAIMER, hrm_signals, inspection_priority, recommendation, score_findings
-from .vision import analyze_images
+from .vision import analyze_images, detect_aerial_trees
 from .streetview import bearing_to_target, get_street_view, get_street_view_image
 from .address import approximate_address
 
@@ -110,10 +110,36 @@ async def area_screen(bounds: AreaBounds):
         total, trees = await public_trees(bounds)
     except RuntimeError as error:
         raise HTTPException(503, str(error)) from error
-    if not trees:
-        return AreaScreeningResponse(bounds=bounds, candidates_found=total, candidate_source="Halifax Public Trees inventory", screened=[], disclaimer=DISCLAIMER)
+    aerial_locations: list[tuple[float, float, str]] = []
+    discovery_status = "imagery_unavailable"
+    area_aerial = await get_area_aerial_image(bounds)
+    if area_aerial:
+        discovery_status = "analysis_unavailable"
+        try:
+            detections = await detect_aerial_trees(area_aerial.image_url)
+            aerial_locations = aerial_candidate_locations(detections.detections, area_aerial.bbox, bounds, trees)
+            discovery_status = "complete"
+        except RuntimeError:
+            # Aerial discovery supplements the authoritative inventory. A failure here
+            # must not discard otherwise usable HRM candidates.
+            pass
+
+    aerial_slots = min(
+        len(aerial_locations),
+        MAX_AERIAL_CANDIDATES,
+        max(2, MAX_CANDIDATES - min(len(trees), MAX_CANDIDATES)),
+    )
+    inventory_slots = MAX_CANDIDATES - aerial_slots
+    screening_targets = [(*tree, "HRM_INVENTORY", None) for tree in trees[:inventory_slots]]
+    screening_targets.extend((latitude, longitude, None, None, None, "AERIAL_DETECTION", evidence) for latitude, longitude, evidence in aerial_locations[:aerial_slots])
+    if not screening_targets:
+        return AreaScreeningResponse(
+            bounds=bounds, candidates_found=0, candidate_source="Halifax Public Trees + GeoNOVA aerial discovery",
+            inventory_candidates_found=total, aerial_candidates_found=len(aerial_locations), aerial_discovery_status=discovery_status,
+            screened=[], disclaimer=DISCLAIMER,
+        )
     candidates: list[AreaCandidate] = []
-    for latitude, longitude, asset_id, fcode, wires in trees:
+    for latitude, longitude, asset_id, fcode, wires, source, discovery_evidence in screening_targets:
         aerial = await get_aerial_image(latitude, longitude)
         street_view = await get_street_view(latitude, longitude)
         heading = bearing_to_target(street_view.panorama_latitude, street_view.panorama_longitude, latitude, longitude) if street_view else None
@@ -125,17 +151,23 @@ async def area_screen(bounds: AreaBounds):
         except RuntimeError as error:
             raise HTTPException(503, str(error)) from error
         score, signs = score_findings(findings)
-        hrm_score, hrm_signs = hrm_signals(fcode, wires)
-        score += hrm_score
-        signs = signs + hrm_signs
+        if source == "HRM_INVENTORY":
+            hrm_score, hrm_signs = hrm_signals(fcode, wires)
+            score += hrm_score
+            signs = signs + hrm_signs
         candidates.append(AreaCandidate(
             asset_id=asset_id, location={"latitude": latitude, "longitude": longitude}, priority=inspection_priority(score), score=score,
             warning_signs=signs, summary=findings.summary, confidence=findings.confidence,
             street_view_date=street_view.capture_date if street_view else None,
+            source=source, discovery_evidence=discovery_evidence, street_view_available=street_view is not None,
         ))
     priority_order = {"HIGH": 0, "MEDIUM": 1, "LOW": 2}
     candidates.sort(key=lambda item: (priority_order[item.priority.value], -item.score))
-    return AreaScreeningResponse(bounds=bounds, candidates_found=total, candidate_source="Halifax Public Trees inventory", screened=candidates, disclaimer=DISCLAIMER)
+    return AreaScreeningResponse(
+        bounds=bounds, candidates_found=total + len(aerial_locations), candidate_source="Halifax Public Trees + GeoNOVA aerial discovery",
+        inventory_candidates_found=total, aerial_candidates_found=len(aerial_locations), aerial_discovery_status=discovery_status,
+        screened=candidates, disclaimer=DISCLAIMER,
+    )
 
 
 static_dir = Path(__file__).resolve().parent.parent / "static"

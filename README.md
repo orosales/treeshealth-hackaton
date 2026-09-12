@@ -23,15 +23,14 @@ An AI-assisted visual screening tool for deciding which Halifax trees may deserv
    npm run dev
    ```
 
-Open the URL shown by Vite, choose a Halifax location, add a current tree image, and run the analysis.
+Open the URL shown by Vite, draw a Halifax scan area, and run the screening.
 
 ## Included MVP behavior
 
 - Leaflet/OpenStreetMap map centred on Halifax with coordinate selection.
-- Camera-capable current photo upload.
 - Best-effort request to the public GeoNOVA/Nova Scotia Orthophoto ArcGIS service. It never blocks ground-image analysis when unavailable.
 - Optional historical Google Street View context after a map selection. Its capture date is shown, and no Google key is sent to the browser.
-- Area screening: draw a rectangle up to about 5 km across, then use Halifax's Public Trees inventory to find municipal/right-of-way candidates and screen up to eight using available aerial and historical Street View evidence. It produces prioritised inspection leads, not confirmed hazard assessments or a private-tree inventory.
+- Hybrid area screening: draw a rectangle up to about 5 km across, combine authoritative Halifax Public Trees assets with up to four deduplicated GeoNOVA aerial discoveries, and screen at most eight combined candidates using aerial and historical Street View evidence. The UI keeps official inventory trees visually distinct from approximate aerial candidates.
 - Server-only OpenAI Responses API vision call with schema-validated results.
 - Deterministic LOW / MEDIUM / HIGH inspection-priority heuristic and visible contributing signs.
 - Copyable municipal-style report including coordinates, timestamp, imagery source/date, evidence, recommendation, and disclaimer.

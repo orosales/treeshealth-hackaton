@@ -67,13 +67,15 @@ Optional:
 - Google Street View
 - Sentinel-2
 
-### Area Candidate Inventory
+### Hybrid Area Candidate Discovery
 
-For area screening, use Halifax Regional Municipality's public **Public Trees** ArcGIS FeatureServer as the primary candidate source. It provides municipal and right-of-way tree asset points, so the workflow is not dependent on volunteers mapping individual trees in OpenStreetMap.
+For area screening, use Halifax Regional Municipality's public **Public Trees** ArcGIS FeatureServer as the authoritative candidate source. It provides municipal and right-of-way tree asset points, so the workflow is not dependent on volunteers mapping individual trees in OpenStreetMap.
 
-The backend queries the public layer by the user-drawn bounding box, displays inventory candidates on the map, and screens at most eight per user-run scan. This is a bounded hackathon control for external image/AI calls, not a complete municipal inspection run.
+Supplement the inventory with AI discovery over one north-up GeoNOVA orthophoto of the selected area. The vision model may return up to four high-confidence individual canopy centres. The backend georeferences those normalized image coordinates, filters detections outside the selected boundary, and removes discoveries within 18 metres of an HRM asset or another discovery.
 
-Coverage limitation: the inventory primarily represents public/right-of-way assets. It does not establish a complete inventory of private-property or woodland trees.
+HRM trees and aerial discoveries share the same evidence-screening pipeline: local GeoNOVA context plus historical Street View when available. The backend screens at most eight combined candidates per user-run scan, reserving no more than four positions for aerial discoveries. This is a bounded hackathon control for external image/AI calls, not a complete municipal inspection run.
+
+The UI distinguishes official inventory trees from approximate aerial discoveries. Aerial candidates are leads rather than confirmed individual trees and do not receive municipal asset IDs.
 
 ### Database
 
@@ -136,20 +138,22 @@ If persistence is required:
 
 ## 4. Request Flow
 
-### Area Screening Flow — Inventory-Led
+### Area Screening Flow — Hybrid Discovery
 
 ```text
 User draws an area (up to about 5 km across)
         ↓
 Backend queries Halifax Public Trees FeatureServer by bounding box
         ↓
-Return and display municipal tree candidates
+Backend analyzes selected-area GeoNOVA imagery for possible unmapped crowns
         ↓
-For up to eight candidates: GeoNOVA + historical Street View when available
+Georeference and deduplicate aerial candidates against HRM assets
+        ↓
+For up to eight combined candidates: GeoNOVA + historical Street View when available
         ↓
 Vision model returns visible findings
         ↓
-Deterministic inspection-priority ranking and map markers
+Deterministic inspection-priority ranking and source-aware map markers
 ```
 
 The UI must label these as visual screening leads, not confirmed hazards. A current user photo remains the strongest evidence for the separate single-tree flow.
