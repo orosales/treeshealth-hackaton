@@ -27,6 +27,18 @@ def score_findings(f: VisionFindings) -> tuple[int, list[str]]:
     return score, signs
 
 
+def hrm_signals(fcode: str | None, wires: str | None) -> tuple[int, list[str]]:
+    """Deterministic bonus from HRM's own asset record, independent of the AI vision score."""
+    score, signs = 0, []
+    if fcode == "LCDS":
+        score += 10
+        signs.append("HRM records already list this as a dead tree")
+    if wires == "Y":
+        score += 2
+        signs.append("Located near overhead wires")
+    return score, signs
+
+
 def inspection_priority(score: int) -> Priority:
     if score >= 6:
         return Priority.HIGH

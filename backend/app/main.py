@@ -12,7 +12,7 @@ from dotenv import load_dotenv
 from .geonova import get_aerial_image
 from .models import AnalysisResponse, AreaBounds, AreaCandidate, AreaScreeningResponse
 from .area import public_trees, validate_bounds
-from .priority import DISCLAIMER, inspection_priority, recommendation, score_findings
+from .priority import DISCLAIMER, hrm_signals, inspection_priority, recommendation, score_findings
 from .vision import analyze_images
 from .streetview import bearing_to_target, get_street_view, get_street_view_image
 from .address import approximate_address
@@ -113,7 +113,7 @@ async def area_screen(bounds: AreaBounds):
     if not trees:
         return AreaScreeningResponse(bounds=bounds, candidates_found=total, candidate_source="Halifax Public Trees inventory", screened=[], disclaimer=DISCLAIMER)
     candidates: list[AreaCandidate] = []
-    for latitude, longitude, asset_id in trees:
+    for latitude, longitude, asset_id, fcode, wires in trees:
         aerial = await get_aerial_image(latitude, longitude)
         street_view = await get_street_view(latitude, longitude)
         heading = bearing_to_target(street_view.panorama_latitude, street_view.panorama_longitude, latitude, longitude) if street_view else None
@@ -125,6 +125,9 @@ async def area_screen(bounds: AreaBounds):
         except RuntimeError as error:
             raise HTTPException(503, str(error)) from error
         score, signs = score_findings(findings)
+        hrm_score, hrm_signs = hrm_signals(fcode, wires)
+        score += hrm_score
+        signs = signs + hrm_signs
         candidates.append(AreaCandidate(
             asset_id=asset_id, location={"latitude": latitude, "longitude": longitude}, priority=inspection_priority(score), score=score,
             warning_signs=signs, summary=findings.summary, confidence=findings.confidence,

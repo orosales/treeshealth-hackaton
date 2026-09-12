@@ -15,7 +15,7 @@ def validate_bounds(bounds: AreaBounds) -> None:
         raise ValueError("Select a smaller area (about 5 km across or less) for this demo scan.")
 
 
-async def public_trees(bounds: AreaBounds) -> tuple[int, list[tuple[float, float, str | None]]]:
+async def public_trees(bounds: AreaBounds) -> tuple[int, list[tuple[float, float, str | None, str | None, str | None]]]:
     geometry = f"{bounds.west},{bounds.south},{bounds.east},{bounds.north}"
     base_params = {
         "where": "1=1", "geometry": geometry, "geometryType": "esriGeometryEnvelope", "inSR": "4326",
@@ -26,7 +26,7 @@ async def public_trees(bounds: AreaBounds) -> tuple[int, list[tuple[float, float
             count_response = await client.get(HALIFAX_PUBLIC_TREES_URL, params={**base_params, "returnCountOnly": "true"})
             count_response.raise_for_status()
             total = int(count_response.json().get("count", 0))
-            response = await client.get(HALIFAX_PUBLIC_TREES_URL, params={**base_params, "outFields": "ASSETID,TREEID", "resultRecordCount": str(MAX_CANDIDATES), "orderByFields": "OBJECTID"})
+            response = await client.get(HALIFAX_PUBLIC_TREES_URL, params={**base_params, "outFields": "ASSETID,TREEID,FCODE,WIRES", "resultRecordCount": str(MAX_CANDIDATES), "orderByFields": "OBJECTID"})
             response.raise_for_status()
             features = response.json().get("features", [])
     except (httpx.HTTPError, ValueError) as error:
@@ -36,5 +36,8 @@ async def public_trees(bounds: AreaBounds) -> tuple[int, list[tuple[float, float
         point = feature.get("geometry") or {}
         if "x" in point and "y" in point:
             attributes = feature.get("attributes") or {}
-            trees.append((point["y"], point["x"], attributes.get("ASSETID") or attributes.get("TREEID")))
+            trees.append((
+                point["y"], point["x"], attributes.get("ASSETID") or attributes.get("TREEID"),
+                attributes.get("FCODE"), attributes.get("WIRES"),
+            ))
     return total, trees
