@@ -20,7 +20,7 @@ function clusterCandidates(candidates: AreaCandidate[], zoom: number) {
 
 export function MapPicker({ location, onPick, onCandidatePick, areaMode, areaCorners, onAreaCorner, candidates }: Props) {
   const mapElement = useRef<HTMLDivElement>(null)
-  const map = useRef<L.Map>(); const marker = useRef<L.CircleMarker>(); const area = useRef<L.Rectangle>(); const candidateLayer = useRef<L.LayerGroup>()
+  const map = useRef<L.Map>(); const marker = useRef<L.CircleMarker>(); const area = useRef<L.Rectangle>(); const cornerLayer = useRef<L.LayerGroup>(); const candidateLayer = useRef<L.LayerGroup>()
   const [zoom, setZoom] = useState(13)
   const areaModeRef = useRef(areaMode); const onPickRef = useRef(onPick); const onAreaCornerRef = useRef(onAreaCorner); const onCandidatePickRef = useRef(onCandidatePick)
   useEffect(() => { areaModeRef.current = areaMode; onPickRef.current = onPick; onAreaCornerRef.current = onAreaCorner; onCandidatePickRef.current = onCandidatePick }, [areaMode, onPick, onAreaCorner, onCandidatePick])
@@ -29,6 +29,7 @@ export function MapPicker({ location, onPick, onCandidatePick, areaMode, areaCor
     map.current = L.map(mapElement.current, { scrollWheelZoom: true }).setView(HALIFAX, 13)
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: '© OpenStreetMap contributors', maxZoom: 19 }).addTo(map.current)
     candidateLayer.current = L.layerGroup().addTo(map.current)
+    cornerLayer.current = L.layerGroup().addTo(map.current)
     map.current.on('zoomend', () => setZoom(map.current?.getZoom() || 13))
     map.current.on('click', event => { if (areaModeRef.current) onAreaCornerRef.current(event.latlng); else onPickRef.current({ latitude: event.latlng.lat, longitude: event.latlng.lng }) })
     return () => { map.current?.remove(); map.current = undefined }
@@ -42,7 +43,9 @@ export function MapPicker({ location, onPick, onCandidatePick, areaMode, areaCor
   useEffect(() => {
     if (!map.current) return
     area.current?.remove()
-    if (areaCorners.length === 2) area.current = L.rectangle(L.latLngBounds(areaCorners[0], areaCorners[1]), { color: '#d39435', weight: 2, fillOpacity: .08 }).addTo(map.current)
+    cornerLayer.current?.clearLayers()
+    areaCorners.forEach((corner, index) => L.circleMarker(corner, { radius: 7, color: '#ffffff', weight: 3, fillColor: '#c87816', fillOpacity: 1 }).bindTooltip(`Corner ${index + 1}`, { permanent: false }).addTo(cornerLayer.current!))
+    if (areaCorners.length === 2) area.current = L.rectangle(L.latLngBounds(areaCorners[0], areaCorners[1]), { color: '#c87816', weight: 3, dashArray: '8 6', fillColor: '#f0ad4e', fillOpacity: .14 }).addTo(map.current)
   }, [areaCorners])
   useEffect(() => {
     if (!candidateLayer.current || !map.current) return
