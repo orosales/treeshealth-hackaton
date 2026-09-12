@@ -11,8 +11,10 @@ from .models import AerialImage
 DEFAULT_SERVICE = "https://nsgiwa.novascotia.ca/arcgis/rest/services/BASE/BASE_NSODB_10k_WM84/MapServer"
 
 
-def bbox_wgs84(latitude: float, longitude: float, radius_m: float = 35) -> list[float]:
-    # The public WGS84 service accepts degrees; the approximation is plenty for a 70 m context image.
+def bbox_wgs84(latitude: float, longitude: float, radius_m: float = 120) -> list[float]:
+    # GeoNOVA's fused orthophoto cache tops out near 0.3 m/pixel. A 240 m
+    # context window at 640 px stays inside that scale instead of returning
+    # the blank tile ArcGIS emits for requests zoomed beyond the cache.
     lat_delta = radius_m / 111_320
     lon_delta = radius_m / (111_320 * max(0.1, abs(cos(radians(latitude)))))
     return [longitude - lon_delta, latitude - lat_delta, longitude + lon_delta, latitude + lat_delta]
@@ -21,7 +23,7 @@ def bbox_wgs84(latitude: float, longitude: float, radius_m: float = 35) -> list[
 def export_url(latitude: float, longitude: float) -> tuple[str, list[float]]:
     bbox = bbox_wgs84(latitude, longitude)
     params = {
-        "bbox": ",".join(f"{value:.4f}" for value in bbox),
+        "bbox": ",".join(f"{value:.6f}" for value in bbox),
         "bboxSR": 4326,
         "imageSR": 4326,
         "size": "640,640",

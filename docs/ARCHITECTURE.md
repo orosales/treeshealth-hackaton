@@ -183,7 +183,9 @@ create 20–50 meter bounding box
 request orthophoto image
 ```
 
-The backend attempts to retrieve an exported image from the GeoNOVA GIS service.
+The backend retrieves a 640 × 640 export covering approximately 240 metres from
+GeoNOVA's cached NSODB 1:10,000 orthophoto service. This extent respects the
+service's maximum cached zoom level; smaller export extents return blank tiles.
 
 Possible pattern:
 
@@ -195,7 +197,8 @@ MapServer/export
 PNG/JPEG aerial image
 ```
 
-Exact endpoint and supported parameters should be confirmed during implementation.
+The implemented default is `BASE/BASE_NSODB_10k_WM84/MapServer/export`, using a
+WGS84 bounding box and output image.
 
 ### Step 3 — Upload Ground Photo
 

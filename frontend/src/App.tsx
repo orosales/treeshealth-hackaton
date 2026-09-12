@@ -1,17 +1,20 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import L from 'leaflet'
 import { MapPicker } from './MapPicker'
-import type { ApproximateAddress, AreaCandidate, AreaScreening, StreetView } from './types'
+import type { AerialContext, ApproximateAddress, AreaCandidate, AreaScreening, StreetView } from './types'
 
 const SCAN_STAGES = ['Finding Halifax public trees', 'Retrieving aerial and Street View context', 'Screening visible evidence']
 const MapIcon = () => <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18-6 3V6l6-3 6 3 6-3v15l-6 3-6-3Z"/><path d="M9 3v15M15 6v15"/></svg>
 const ScanIcon = () => <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8V5a1 1 0 0 1 1-1h3M16 4h3a1 1 0 0 1 1 1v3M20 16v3a1 1 0 0 1-1 1h-3M8 20H5a1 1 0 0 1-1-1v-3"/><circle cx="12" cy="12" r="3"/></svg>
 const PinIcon = () => <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 10c0 5-8 12-8 12S4 15 4 10a8 8 0 1 1 16 0Z"/><circle cx="12" cy="10" r="2.5"/></svg>
+const CameraIcon = () => <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h3l1.5-2h7L17 7h3a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V8a1 1 0 0 1 1-1Z"/><circle cx="12" cy="13" r="4"/></svg>
 
 export default function App() {
   const [location, setLocation] = useState<{ latitude: number; longitude: number } | null>(null)
   const [streetView, setStreetView] = useState<StreetView | null>(null)
   const [streetViewStatus, setStreetViewStatus] = useState('')
+  const [aerial, setAerial] = useState<AerialContext | null>(null)
+  const [aerialStatus, setAerialStatus] = useState('')
   const [address, setAddress] = useState<ApproximateAddress | null>(null)
   const [addressStatus, setAddressStatus] = useState('')
   const [areaMode, setAreaMode] = useState(false)
@@ -28,12 +31,13 @@ export default function App() {
   }, [areaLoading])
 
   const chooseLocation = useCallback(async (value: { latitude: number; longitude: number }) => {
-    setLocation(value); setError(''); setStreetView(null); setAddress(null)
-    setStreetViewStatus('Loading historical Street View…'); setAddressStatus('Looking up nearest address…')
-    try { const response = await fetch(`/api/streetview?latitude=${value.latitude}&longitude=${value.longitude}`); if (!response.ok) throw new Error(); setStreetView(await response.json()); setStreetViewStatus('') }
-    catch { setStreetViewStatus('Historical Street View is unavailable here or has not been configured.') }
-    try { const response = await fetch(`/api/location/address?latitude=${value.latitude}&longitude=${value.longitude}`); if (!response.ok) throw new Error(); setAddress(await response.json()); setAddressStatus('') }
-    catch { setAddressStatus('Approximate nearest address unavailable.') }
+    setLocation(value); setError(''); setStreetView(null); setAerial(null); setAddress(null)
+    setStreetViewStatus('Loading historical Street View…'); setAerialStatus('Loading aerial context…'); setAddressStatus('Looking up nearest address…')
+    await Promise.all([
+      (async () => { try { const response = await fetch(`/api/streetview?latitude=${value.latitude}&longitude=${value.longitude}`); if (!response.ok) throw new Error(); setStreetView(await response.json()); setStreetViewStatus('') } catch { setStreetViewStatus('Historical Street View is unavailable here or has not been configured.') } })(),
+      (async () => { try { const response = await fetch(`/api/geonova/image?latitude=${value.latitude}&longitude=${value.longitude}`); if (!response.ok) throw new Error(); setAerial(await response.json()); setAerialStatus('') } catch { setAerialStatus('GeoNOVA aerial imagery is unavailable for this location.') } })(),
+      (async () => { try { const response = await fetch(`/api/location/address?latitude=${value.latitude}&longitude=${value.longitude}`); if (!response.ok) throw new Error(); setAddress(await response.json()); setAddressStatus('') } catch { setAddressStatus('Approximate nearest address unavailable.') } })(),
+    ])
   }, [])
 
   const chooseCandidate = useCallback((candidate: AreaCandidate) => { void chooseLocation(candidate.location) }, [chooseLocation])
@@ -92,8 +96,27 @@ export default function App() {
     </section>
 
     {location && <section className="tree-detail">
-      <div className="detail-header"><div className="detail-title"><span className="icon-box"><PinIcon /></span><div><p className="eyebrow">SELECTED TREE</p><h2>{selectedCandidate?.asset_id ? `Tree ${selectedCandidate.asset_id}` : 'Tree context'}</h2></div></div>{selectedCandidate && <b className={`priority-pill ${selectedCandidate.priority.toLowerCase()}`}><i /> {selectedCandidate.priority} priority</b>}</div>
-      <div className="detail-grid"><div className="detail-meta"><div className="meta-block"><span>Approximate location</span><strong>{address?.address || addressStatus || 'Location selected on map'}</strong></div><div className="meta-block"><span>Coordinates</span><strong className="coordinates">{location.latitude.toFixed(6)}, {location.longitude.toFixed(6)}</strong></div>{selectedCandidate && <><div className="meta-block"><span>AI confidence</span><strong>{Math.round(selectedCandidate.confidence * 100)}%</strong></div><div className="finding-note"><span>Screening summary</span><p>{selectedCandidate.summary}</p></div></>}</div><div className="streetview-panel">{streetView && <figure className="streetview"><img src={`/api/streetview/image?latitude=${location.latitude}&longitude=${location.longitude}`} alt="Historical Google Street View context aimed toward selected tree location" /><figcaption><span>Historical Street View</span><b>{streetView.captureDate || 'Date unavailable'}</b></figcaption></figure>}{streetViewStatus && <div className="context-placeholder"><MapIcon /><p>{streetViewStatus}</p></div>}</div></div>
+      <div className="detail-header">
+        <div className="detail-title"><span className="icon-box"><PinIcon /></span><div><p className="eyebrow">SELECTED TREE</p><h2>{selectedCandidate?.asset_id ? `Tree ${selectedCandidate.asset_id}` : 'Tree context'}</h2></div></div>
+        {selectedCandidate && <b className={`priority-pill ${selectedCandidate.priority.toLowerCase()}`}><i /> {selectedCandidate.priority} priority</b>}
+      </div>
+      <div className="detail-info-strip">
+        <div><span>Approximate location</span><strong>{address?.address || addressStatus || 'Location selected on map'}</strong></div>
+        <div><span>Coordinates</span><strong className="coordinates">{location.latitude.toFixed(6)}, {location.longitude.toFixed(6)}</strong></div>
+        {selectedCandidate && <div><span>AI confidence</span><strong>{Math.round(selectedCandidate.confidence * 100)}%</strong></div>}
+      </div>
+      <div className="evidence-heading"><div><p className="eyebrow">VISUAL EVIDENCE</p><h3>Aerial and street-level comparison</h3></div><span>Two complementary perspectives</span></div>
+      <div className="evidence-grid">
+        <article className="evidence-card">
+          <div className="evidence-label"><span className="evidence-icon"><MapIcon /></span><div><b>Aerial context</b><small>Canopy and surroundings</small></div></div>
+          {aerial ? <figure><img src={aerial.imageUrl} onError={() => { setAerial(null); setAerialStatus('GeoNOVA aerial image could not be displayed.') }} alt="GeoNOVA aerial context around the selected tree" /><figcaption><span>{aerial.source}</span><b>{aerial.captureDate || 'Current published layer'}</b></figcaption></figure> : <div className="evidence-placeholder"><MapIcon /><p>{aerialStatus || 'Loading aerial context…'}</p></div>}
+        </article>
+        <article className="evidence-card">
+          <div className="evidence-label"><span className="evidence-icon"><CameraIcon /></span><div><b>Street-level context</b><small>Tree-facing historical view</small></div></div>
+          {streetView ? <figure><img src={`/api/streetview/image?latitude=${location.latitude}&longitude=${location.longitude}`} onError={() => { setStreetView(null); setStreetViewStatus('Historical Street View image could not be displayed.') }} alt="Historical Google Street View context aimed toward selected tree location" /><figcaption><span>{streetView.source}</span><b>{streetView.captureDate || 'Date unavailable'}</b></figcaption></figure> : <div className="evidence-placeholder"><CameraIcon /><p>{streetViewStatus || 'Loading historical Street View…'}</p></div>}
+        </article>
+      </div>
+      {selectedCandidate && <div className="finding-note comparison-note"><span>Screening summary</span><p>{selectedCandidate.summary}</p></div>}
     </section>}
     <footer><span>TreeSight · Halifax, Nova Scotia</span><span>Public inventory • Aerial context • Street View</span></footer>
   </main>
