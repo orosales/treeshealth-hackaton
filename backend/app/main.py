@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from pathlib import Path
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
+from fastapi.staticfiles import StaticFiles
 from dotenv import load_dotenv
 
 from .geonova import get_aerial_image
@@ -131,3 +133,8 @@ async def area_screen(bounds: AreaBounds):
     priority_order = {"HIGH": 0, "MEDIUM": 1, "LOW": 2}
     candidates.sort(key=lambda item: (priority_order[item.priority.value], -item.score))
     return AreaScreeningResponse(bounds=bounds, candidates_found=total, candidate_source="Halifax Public Trees inventory", screened=candidates, disclaimer=DISCLAIMER)
+
+
+static_dir = Path(__file__).resolve().parent.parent / "static"
+if static_dir.is_dir():
+    app.mount("/", StaticFiles(directory=static_dir, html=True), name="static")

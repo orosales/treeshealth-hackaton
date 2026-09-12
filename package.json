@@ -1,0 +1,7 @@
+{
+  "name": "project12sep2026",
+  "private": true,
+  "scripts": {
+    "typecheck": "npm --prefix frontend run typecheck && python3 -m py_compile backend/app/*.py"
+  }
+}

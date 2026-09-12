@@ -20,7 +20,7 @@ function clusterCandidates(candidates: AreaCandidate[], zoom: number) {
 
 export function MapPicker({ location, onPick, onCandidatePick, areaMode, areaCorners, onAreaCorner, candidates }: Props) {
   const mapElement = useRef<HTMLDivElement>(null)
-  const map = useRef<L.Map>(); const marker = useRef<L.Marker>(); const area = useRef<L.Rectangle>(); const candidateLayer = useRef<L.LayerGroup>()
+  const map = useRef<L.Map>(); const marker = useRef<L.CircleMarker>(); const area = useRef<L.Rectangle>(); const candidateLayer = useRef<L.LayerGroup>()
   const [zoom, setZoom] = useState(13)
   const areaModeRef = useRef(areaMode); const onPickRef = useRef(onPick); const onAreaCornerRef = useRef(onAreaCorner); const onCandidatePickRef = useRef(onCandidatePick)
   useEffect(() => { areaModeRef.current = areaMode; onPickRef.current = onPick; onAreaCornerRef.current = onAreaCorner; onCandidatePickRef.current = onCandidatePick }, [areaMode, onPick, onAreaCorner, onCandidatePick])
@@ -36,7 +36,7 @@ export function MapPicker({ location, onPick, onCandidatePick, areaMode, areaCor
   useEffect(() => {
     if (!map.current || !location) return
     const position: [number, number] = [location.latitude, location.longitude]
-    marker.current?.remove(); marker.current = L.marker(position).addTo(map.current).bindPopup('Selected inspection location').openPopup()
+    marker.current?.remove(); marker.current = L.circleMarker(position, { radius: 15, color: '#173b30', weight: 3, fillColor: '#ffffff', fillOpacity: .35, className: 'selected-tree-marker' }).addTo(map.current).bindPopup('Selected inspection lead').openPopup()
     map.current.flyTo(position, Math.max(map.current.getZoom(), 16))
   }, [location])
   useEffect(() => {
