@@ -62,10 +62,21 @@ Primary current-detail source:
 
 - User phone/camera image
 
-Optional:
+Freshness-aware street-level cascade:
 
-- Google Street View
-- Sentinel-2
+1. Newest nearby Mapillary image when `MAPILLARY_ACCESS_TOKEN` is configured.
+2. Google Street View when Mapillary has no usable nearby image.
+
+Google imagery is a historical fallback, not a current-condition claim. Every
+street-level result carries its provider, capture date, and a `RECENT`, `AGING`,
+`HISTORICAL`, or `UNKNOWN` freshness label. A phone or drone image uploaded by a
+user is the confirmation source after storms or when provider imagery is stale.
+
+Copernicus Sentinel-1 radar and Sentinel-2 optical catalogue metadata are queried
+for the selected area. They show the newest available area observations and
+optical cloud cover, but are kept separate
+from individual-tree evidence. At 10 m-class optical resolution it is suitable
+for a later area-scale change detector, not for diagnosing one tree.
 
 ### Hybrid Area Candidate Discovery
 
@@ -73,7 +84,12 @@ For area screening, use Halifax Regional Municipality's public **Public Trees** 
 
 Supplement the inventory with AI discovery over one north-up GeoNOVA orthophoto of the selected area. The vision model may return up to four high-confidence individual canopy centres. The backend georeferences those normalized image coordinates, filters detections outside the selected boundary, and removes discoveries within 18 metres of an HRM asset or another discovery.
 
-HRM trees and aerial discoveries share the same evidence-screening pipeline: local GeoNOVA context plus historical Street View when available. The backend screens at most eight combined candidates per user-run scan, reserving no more than four positions for aerial discoveries. This is a bounded hackathon control for external image/AI calls, not a complete municipal inspection run.
+HRM trees and aerial discoveries share the same evidence-screening pipeline:
+local GeoNOVA context plus the freshest usable ground context (Mapillary first,
+Google Street View fallback). The backend screens at most eight combined
+candidates per user-run scan, reserving no more than four positions for aerial
+discoveries. This is a bounded hackathon control for external image/AI calls, not
+a complete municipal inspection run.
 
 The UI distinguishes official inventory trees from approximate aerial discoveries. Aerial candidates are leads rather than confirmed individual trees and do not receive municipal asset IDs.
 
@@ -110,6 +126,8 @@ If persistence is required:
 │ • Coordinates handling       │
 │ • Halifax Public Trees query │
 │ • GeoNOVA integration        │
+│ • Ground-provider cascade    │
+│ • Sentinel radar/optical metadata │
 │ • AI orchestration           │
 │ • Priority calculation       │
 │ • Report generation          │
@@ -149,14 +167,17 @@ Backend analyzes selected-area GeoNOVA imagery for possible unmapped crowns
         ↓
 Georeference and deduplicate aerial candidates against HRM assets
         ↓
-For up to eight combined candidates: GeoNOVA + historical Street View when available
+For up to eight combined candidates: GeoNOVA + Mapillary, with Street View fallback
         ↓
 Vision model returns visible findings
         ↓
 Deterministic inspection-priority ranking and source-aware map markers
 ```
 
-The UI must label these as visual screening leads, not confirmed hazards. A current user photo remains the strongest evidence for the separate single-tree flow.
+The UI must label these as visual screening leads, not confirmed hazards. It also
+shows the street-image provider and freshness, plus recent Sentinel-1/2 acquisition
+metadata for area context. A current phone/drone photo remains the strongest
+evidence for the separate single-tree confirmation flow.
 
 ### Step 1 — Select Location
 
@@ -332,9 +353,11 @@ streetViewImage
 Backend responsibilities:
 
 1. Retrieve GeoNOVA image.
-2. Call vision AI.
-3. Calculate priority.
-4. Return result.
+2. Retrieve the newest nearby Mapillary image, or Google Street View as fallback.
+3. Combine those sources with the required current phone/drone image.
+4. Call vision AI.
+5. Calculate priority.
+6. Return the source dates and result.
 
 ### POST /api/area-screen
 
@@ -353,8 +376,28 @@ Backend responsibilities:
 
 1. Validate the bounded scan area.
 2. Query the Halifax Public Trees FeatureServer using an envelope intersection.
-3. Screen up to eight inventory candidates using available imagery.
-4. Return ranked visual screening leads with tree asset IDs and coordinates.
+3. Supplement the inventory with bounded GeoNOVA aerial discovery.
+4. Retrieve Mapillary-first ground evidence for up to eight candidates.
+5. Query recent Sentinel-1 radar and Sentinel-2 optical catalogue metadata for area-level context.
+6. Return ranked visual screening leads with source and freshness metadata.
+
+### GET /api/ground-context
+
+Returns a normalized ground image without exposing provider credentials:
+
+```json
+{
+  "provider": "MAPILLARY",
+  "source": "Mapillary (crowdsourced)",
+  "captureDate": "2026-09-10T14:23:00+00:00",
+  "imageUrl": "/api/mapillary/image/123456",
+  "freshness": "RECENT"
+}
+```
+
+If no Mapillary image is available, the same shape identifies
+`GOOGLE_STREET_VIEW`. `/api/mapillary/image/{image_id}` proxies the selected
+thumbnail so `MAPILLARY_ACCESS_TOKEN` never reaches the browser.
 
 ### GET /api/geonova/image
 
@@ -482,29 +525,32 @@ The first MVP may accept only one image.
 
 Support for multiple images is a useful extension.
 
-## 9. Optional Google Street View Integration
+## 9. Freshness-Aware Ground Imagery
 
-Street View can provide historical ground-level context.
+Mapillary and Google Street View provide opportunistic ground-level context.
 
 Architecture:
 
 ```text
-coordinates
-    ↓
-Street View metadata
-    ↓
-panorama available?
-    ↓
-retrieve image
+coordinates → newest nearby Mapillary image?
+                         │ no
+                         ▼
+                  Google panorama available?
+                         │ yes
+                         ▼
+             normalized provider/date/image response
 ```
 
 Important:
 
-The capture date must be displayed.
+The provider and capture date must be displayed. Mapillary is queried inside a
+75 metre bounding box; tree-facing camera headings are preferred before choosing
+the newest capture. Provider thumbnails are proxied through FastAPI so access
+tokens remain server-side.
 
 Street View should not be treated as current evidence unless the image is recent enough for the use case.
 
-## 10. Optional Sentinel-2 Integration
+## 10. Sentinel Radar/Optical Area Context
 
 Sentinel-2 is useful for:
 
@@ -513,7 +559,15 @@ Sentinel-2 is useful for:
 - Historical canopy changes
 - Neighbourhood-level vegetation monitoring
 
-It should not be used as the main individual-tree image because its best spatial resolution is approximately 10 meters per pixel.
+The implemented integration queries the public Copernicus Data Space STAC
+catalogue concurrently for recent Sentinel-1 GRD and Sentinel-2 L2A acquisitions,
+then displays their acquisition dates and optical cloud cover. It deliberately
+does not turn catalogue metadata into a
+disturbance claim. A production disturbance signal would compare cloud-screened,
+seasonally matched scenes before and after an event.
+
+Sentinel-2 should not be used as the main individual-tree image because its best
+spatial resolution is approximately 10 metres per pixel.
 
 ## 11. Failure Handling
 
@@ -550,8 +604,9 @@ Secrets must remain backend-only.
 Environment variables:
 
 ```text
-AI_API_KEY=
-GOOGLE_MAPS_API_KEY=
+OPENAI_API_KEY=
+GOOGLE_STREET_VIEW_API_KEY=
+MAPILLARY_ACCESS_TOKEN=
 ```
 
 Do not expose keys directly in frontend JavaScript.
@@ -607,14 +662,13 @@ Results screen
 GeoNOVA aerial image
 ```
 
-### Nice to Have
+### Implemented Context Enhancements
 
 ```text
-Street View
-Database
-Historical comparison
-Sentinel-2
-311 integration
+Mapillary-first ground context
+Google Street View fallback
+Sentinel-2 area acquisition context
+Optional current phone/drone confirmation
 ```
 
 If GeoNOVA integration takes too long, it should not block the demo.

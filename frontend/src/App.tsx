@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import L from 'leaflet'
 import { MapPicker } from './MapPicker'
-import type { AerialContext, ApproximateAddress, AreaCandidate, AreaScreening, StreetView } from './types'
+import type { AerialContext, ApproximateAddress, AreaCandidate, AreaScreening, GroundContext, Result } from './types'
 
-const SCAN_STAGES = ['Finding Halifax public trees', 'Retrieving aerial and Street View context', 'Screening visible evidence']
+const SCAN_STAGES = ['Finding Halifax public trees', 'Retrieving freshness-aware imagery', 'Screening visible evidence']
 const MapIcon = () => <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18-6 3V6l6-3 6 3 6-3v15l-6 3-6-3Z"/><path d="M9 3v15M15 6v15"/></svg>
 const ScanIcon = () => <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8V5a1 1 0 0 1 1-1h3M16 4h3a1 1 0 0 1 1 1v3M20 16v3a1 1 0 0 1-1 1h-3M8 20H5a1 1 0 0 1-1-1v-3"/><circle cx="12" cy="12" r="3"/></svg>
 const PinIcon = () => <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 10c0 5-8 12-8 12S4 15 4 10a8 8 0 1 1 16 0Z"/><circle cx="12" cy="10" r="2.5"/></svg>
@@ -11,8 +11,8 @@ const CameraIcon = () => <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4
 
 export default function App() {
   const [location, setLocation] = useState<{ latitude: number; longitude: number } | null>(null)
-  const [streetView, setStreetView] = useState<StreetView | null>(null)
-  const [streetViewStatus, setStreetViewStatus] = useState('')
+  const [groundContext, setGroundContext] = useState<GroundContext | null>(null)
+  const [groundContextStatus, setGroundContextStatus] = useState('')
   const [aerial, setAerial] = useState<AerialContext | null>(null)
   const [aerialStatus, setAerialStatus] = useState('')
   const [address, setAddress] = useState<ApproximateAddress | null>(null)
@@ -23,6 +23,13 @@ export default function App() {
   const [areaLoading, setAreaLoading] = useState(false)
   const [error, setError] = useState('')
   const [scanStage, setScanStage] = useState(0)
+  const [fieldImage, setFieldImage] = useState<File | null>(null)
+  const [fieldResult, setFieldResult] = useState<Result | null>(null)
+  const [fieldLoading, setFieldLoading] = useState(false)
+  const [fieldError, setFieldError] = useState('')
+  const fieldPreview = useMemo(() => fieldImage ? URL.createObjectURL(fieldImage) : '', [fieldImage])
+
+  useEffect(() => () => { if (fieldPreview) URL.revokeObjectURL(fieldPreview) }, [fieldPreview])
 
   useEffect(() => {
     if (!areaLoading) { setScanStage(0); return }
@@ -31,16 +38,24 @@ export default function App() {
   }, [areaLoading])
 
   const chooseLocation = useCallback(async (value: { latitude: number; longitude: number }) => {
-    setLocation(value); setError(''); setStreetView(null); setAerial(null); setAddress(null)
-    setStreetViewStatus('Loading historical Street View…'); setAerialStatus('Loading aerial context…'); setAddressStatus('Looking up nearest address…')
+    setLocation(value); setError(''); setGroundContext(null); setAerial(null); setAddress(null); setFieldImage(null); setFieldResult(null); setFieldError('')
+    setGroundContextStatus('Finding newest available street-level image…'); setAerialStatus('Loading aerial context…'); setAddressStatus('Looking up nearest address…')
     await Promise.all([
-      (async () => { try { const response = await fetch(`/api/streetview?latitude=${value.latitude}&longitude=${value.longitude}`); if (!response.ok) throw new Error(); setStreetView(await response.json()); setStreetViewStatus('') } catch { setStreetViewStatus('Historical Street View is unavailable here or has not been configured.') } })(),
+      (async () => { try { const response = await fetch(`/api/ground-context?latitude=${value.latitude}&longitude=${value.longitude}`); if (!response.ok) throw new Error(); setGroundContext(await response.json()); setGroundContextStatus('') } catch { setGroundContextStatus('No nearby Mapillary or Google Street View image is available.') } })(),
       (async () => { try { const response = await fetch(`/api/geonova/image?latitude=${value.latitude}&longitude=${value.longitude}`); if (!response.ok) throw new Error(); setAerial(await response.json()); setAerialStatus('') } catch { setAerialStatus('GeoNOVA aerial imagery is unavailable for this location.') } })(),
       (async () => { try { const response = await fetch(`/api/location/address?latitude=${value.latitude}&longitude=${value.longitude}`); if (!response.ok) throw new Error(); setAddress(await response.json()); setAddressStatus('') } catch { setAddressStatus('Approximate nearest address unavailable.') } })(),
     ])
   }, [])
 
   const chooseCandidate = useCallback((candidate: AreaCandidate) => { void chooseLocation(candidate.location) }, [chooseLocation])
+  const useGoogleFallback = useCallback(async () => {
+    if (!location || groundContext?.provider !== 'MAPILLARY') { setGroundContext(null); setGroundContextStatus('Street-level image could not be displayed.'); return }
+    try {
+      const response = await fetch(`/api/ground-context?latitude=${location.latitude}&longitude=${location.longitude}&google_fallback=true`)
+      if (!response.ok) throw new Error()
+      setGroundContext(await response.json()); setGroundContextStatus('')
+    } catch { setGroundContext(null); setGroundContextStatus('Mapillary image failed and Google fallback is unavailable.') }
+  }, [location, groundContext])
   const isSelectedCandidate = (candidate: AreaCandidate) => Boolean(location && Math.abs(location.latitude - candidate.location.latitude) < .000001 && Math.abs(location.longitude - candidate.location.longitude) < .000001)
   const selectedCandidate = areaScan?.screened.find(isSelectedCandidate)
   const counts = useMemo(() => areaScan?.screened.reduce((total, item) => ({ ...total, [item.priority]: total[item.priority] + 1 }), { HIGH: 0, MEDIUM: 0, LOW: 0 }) ?? { HIGH: 0, MEDIUM: 0, LOW: 0 }, [areaScan])
@@ -61,13 +76,25 @@ export default function App() {
     finally { setAreaLoading(false) }
   }
 
+  async function analyzeFieldEvidence() {
+    if (!location || !fieldImage) return
+    const form = new FormData(); form.append('latitude', String(location.latitude)); form.append('longitude', String(location.longitude)); form.append('groundImage', fieldImage)
+    setFieldLoading(true); setFieldError(''); setFieldResult(null)
+    try {
+      const response = await fetch('/api/tree-analysis', { method: 'POST', body: form })
+      const body = await response.json(); if (!response.ok) throw new Error(body.detail || 'Photo analysis unavailable.')
+      setFieldResult(body)
+    } catch (cause) { setFieldError(cause instanceof Error ? cause.message : 'Photo analysis unavailable.') }
+    finally { setFieldLoading(false) }
+  }
+
   return <main>
     <header className="app-header">
       <div className="brand-mark"><span>H</span></div><div className="brand-copy"><p className="eyebrow">HALIFAX URBAN FOREST</p><h1>TreeSight</h1></div>
       <div className="system-status"><i /> Screening system online</div>
     </header>
 
-    <section className="hero"><div><p className="eyebrow">SMARTER FIELD INSPECTIONS</p><h2>See which trees<br /><span>need attention first.</span></h2><p className="hero-copy">Select an area to screen public-tree inventory using aerial and historical street-level evidence.</p></div><div className="hero-badge" aria-hidden="true"><MapIcon /><span>Public tree<br />screening</span></div></section>
+    <section className="hero"><div><p className="eyebrow">SMARTER FIELD INSPECTIONS</p><h2>See which trees<br /><span>need attention first.</span></h2><p className="hero-copy">Combine official inventory, aerial discovery, the newest available street imagery, and current field evidence.</p></div><div className="hero-badge" aria-hidden="true"><MapIcon /><span>Public tree<br />screening</span></div></section>
 
     <section className="map-workspace">
       <div className="map-card">
@@ -92,7 +119,8 @@ export default function App() {
         <div className="drawer-header"><div><p className="eyebrow">SCAN RESULTS</p><h2>Inspection leads</h2></div><span className="result-total">{areaScan.screened.length}</span></div>
         <div className="result-stats"><span><i className="high" />{counts.HIGH} high</span><span><i className="medium" />{counts.MEDIUM} medium</span><span><i className="low" />{counts.LOW} low</span></div>
         <p className="drawer-summary">{areaScan.inventory_candidates_found} HRM inventory trees · {areaScan.aerial_candidates_found} possible aerial discoveries.</p>
-        {areaScan.screened.length ? <ol>{areaScan.screened.map((candidate, index) => { const selected = isSelectedCandidate(candidate); const discovered = candidate.source === 'AERIAL_DETECTION'; return <li key={`${candidate.location.latitude}-${candidate.location.longitude}`}><button className={`lead-row${selected ? ' selected' : ''}`} aria-pressed={selected} onClick={() => chooseCandidate(candidate)}><span className={`lead-number ${candidate.priority.toLowerCase()}${discovered ? ' aerial' : ''}`}>{index + 1}</span><span className="lead-copy"><span className="lead-title"><strong>{candidate.asset_id ? `Tree ${candidate.asset_id}` : `Aerial candidate ${index + 1}`}</strong><b className={`tag ${candidate.priority.toLowerCase()}`}>{candidate.priority}</b></span><span className="source-row"><em className={`source-badge ${discovered ? 'aerial' : 'inventory'}`}>{discovered ? 'Aerial discovery' : 'Official inventory'}</em>{candidate.street_view_available && <em className="source-badge street">Street View</em>}</span><small>{candidate.summary}</small>{selected && <em className="selected-label"><PinIcon /> Selected on map</em>}</span><span className="row-arrow">›</span></button></li> })}</ol> : <div className="empty-state"><MapIcon /><b>No tree candidates found</b><p>Try drawing another area near a public street.</p></div>}
+        {areaScan.satellite_context?.status === 'AVAILABLE' && <div className="satellite-context"><span>RECENT AREA COVERAGE</span><b>{areaScan.satellite_context.latest_radar_observation ? `S1 radar ${new Date(areaScan.satellite_context.latest_radar_observation).toLocaleDateString()}` : 'S1 radar unavailable'} · {areaScan.satellite_context.latest_optical_observation ? `S2 optical ${new Date(areaScan.satellite_context.latest_optical_observation).toLocaleDateString()}` : 'S2 optical unavailable'}</b><small>{areaScan.satellite_context.cloud_cover == null ? 'Optical cloud estimate unavailable' : `${Math.round(areaScan.satellite_context.cloud_cover)}% optical cloud cover`} · change model not run</small></div>}
+        {areaScan.screened.length ? <ol>{areaScan.screened.map((candidate, index) => { const selected = isSelectedCandidate(candidate); const discovered = candidate.source === 'AERIAL_DETECTION'; const groundLabel = candidate.ground_context_provider === 'MAPILLARY' ? 'Mapillary' : 'Street View'; return <li key={`${candidate.location.latitude}-${candidate.location.longitude}`}><button className={`lead-row${selected ? ' selected' : ''}`} aria-pressed={selected} onClick={() => chooseCandidate(candidate)}><span className={`lead-number ${candidate.priority.toLowerCase()}${discovered ? ' aerial' : ''}`}>{index + 1}</span><span className="lead-copy"><span className="lead-title"><strong>{candidate.asset_id ? `Tree ${candidate.asset_id}` : `Aerial candidate ${index + 1}`}</strong><b className={`tag ${candidate.priority.toLowerCase()}`}>{candidate.priority}</b></span><span className="source-row"><em className={`source-badge ${discovered ? 'aerial' : 'inventory'}`}>{discovered ? 'Aerial discovery' : 'Official inventory'}</em>{candidate.street_view_available && <em className={`source-badge ${candidate.ground_context_provider === 'MAPILLARY' ? 'mapillary' : 'street'}`}>{groundLabel}</em>}</span><small>{candidate.summary}</small>{selected && <em className="selected-label"><PinIcon /> Selected on map</em>}</span><span className="row-arrow">›</span></button></li> })}</ol> : <div className="empty-state"><MapIcon /><b>No tree candidates found</b><p>Try drawing another area near a public street.</p></div>}
       </aside>}
     </section>
 
@@ -106,19 +134,29 @@ export default function App() {
         <div><span>Coordinates</span><strong className="coordinates">{location.latitude.toFixed(6)}, {location.longitude.toFixed(6)}</strong></div>
         {selectedCandidate && <div><span>AI confidence</span><strong>{Math.round(selectedCandidate.confidence * 100)}%</strong></div>}
       </div>
-      <div className="evidence-heading"><div><p className="eyebrow">VISUAL EVIDENCE</p><h3>Aerial and street-level comparison</h3></div><span>Two complementary perspectives</span></div>
+      <div className="evidence-heading"><div><p className="eyebrow">VISUAL EVIDENCE</p><h3>Freshness-aware evidence</h3></div><span>Source and capture age shown explicitly</span></div>
       <div className="evidence-grid">
         <article className="evidence-card">
           <div className="evidence-label"><span className="evidence-icon"><MapIcon /></span><div><b>Aerial context</b><small>Canopy and surroundings</small></div></div>
           {aerial ? <figure><img src={aerial.imageUrl} onError={() => { setAerial(null); setAerialStatus('GeoNOVA aerial image could not be displayed.') }} alt="GeoNOVA aerial context around the selected tree" /><figcaption><span>{aerial.source}</span><b>{aerial.captureDate || 'Current published layer'}</b></figcaption></figure> : <div className="evidence-placeholder"><MapIcon /><p>{aerialStatus || 'Loading aerial context…'}</p></div>}
         </article>
         <article className="evidence-card">
-          <div className="evidence-label"><span className="evidence-icon"><CameraIcon /></span><div><b>Street-level context</b><small>Tree-facing historical view</small></div></div>
-          {streetView ? <figure><img src={`/api/streetview/image?latitude=${location.latitude}&longitude=${location.longitude}`} onError={() => { setStreetView(null); setStreetViewStatus('Historical Street View image could not be displayed.') }} alt="Historical Google Street View context aimed toward selected tree location" /><figcaption><span>{streetView.source}</span><b>{streetView.captureDate || 'Date unavailable'}</b></figcaption></figure> : <div className="evidence-placeholder"><CameraIcon /><p>{streetViewStatus || 'Loading historical Street View…'}</p></div>}
+          <div className="evidence-label"><span className="evidence-icon"><CameraIcon /></span><div><b>Street-level context</b><small>Newest provider image available</small></div>{groundContext && <em className={`freshness ${groundContext.freshness.toLowerCase()}`}>{groundContext.freshness}</em>}</div>
+          {groundContext ? <figure><img src={groundContext.imageUrl} onError={() => { void useGoogleFallback() }} alt={`${groundContext.source} context near the selected tree`} /><figcaption><span>{groundContext.source}</span><b>{groundContext.captureDate ? new Date(groundContext.captureDate).toLocaleDateString() : 'Date unavailable'}</b></figcaption></figure> : <div className="evidence-placeholder"><CameraIcon /><p>{groundContextStatus || 'Finding newest available street image…'}</p></div>}
         </article>
       </div>
       {selectedCandidate && <div className="finding-note comparison-note"><span>Screening summary</span><p>{selectedCandidate.summary}</p></div>}
+      <section className="field-evidence">
+        <div><p className="eyebrow">CURRENT CONFIRMATION</p><h3>Add a phone or drone image</h3><p>Use a recent photo after a storm or when historical imagery is not sufficient.</p></div>
+        <div className="field-actions">
+          <label className="upload-action"><CameraIcon />{fieldImage ? 'Replace image' : 'Choose or take photo'}<input type="file" accept="image/*" capture="environment" onChange={event => { setFieldImage(event.target.files?.[0] || null); setFieldResult(null); setFieldError('') }} /></label>
+          <button className="primary-action" disabled={!fieldImage || fieldLoading} onClick={analyzeFieldEvidence}>{fieldLoading ? 'Analyzing current evidence…' : 'Analyze current evidence'}</button>
+        </div>
+        {fieldPreview && <img className="field-preview" src={fieldPreview} alt="Current field evidence selected for analysis" />}
+        {fieldError && <p className="error" role="alert">{fieldError}</p>}
+        {fieldResult && <div className={`field-result ${fieldResult.priority.toLowerCase()}`}><b>{fieldResult.priority} inspection priority</b><p>{fieldResult.findings.summary}</p><small>{fieldResult.recommendation}</small></div>}
+      </section>
     </section>}
-    <footer><span>TreeSight · Halifax, Nova Scotia</span><span>Public inventory • Aerial context • Street View</span></footer>
+    <footer><span>TreeSight · Halifax, Nova Scotia</span><span>HRM inventory • GeoNOVA • Mapillary • Street View fallback</span></footer>
   </main>
 }

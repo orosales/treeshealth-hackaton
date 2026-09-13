@@ -57,11 +57,34 @@ class StreetViewImage(BaseModel):
     panorama_longitude: float
 
 
+class GroundContextImage(BaseModel):
+    provider: Literal["MAPILLARY", "GOOGLE_STREET_VIEW"]
+    source: str
+    capture_date: str | None = None
+    image_url: str
+    latitude: float | None = None
+    longitude: float | None = None
+    compass_angle: float | None = None
+    freshness: Literal["RECENT", "AGING", "HISTORICAL", "UNKNOWN"] = "UNKNOWN"
+
+
+class SatelliteContext(BaseModel):
+    source: str = "Copernicus Sentinel-1 GRD + Sentinel-2 L2A"
+    latest_observation: str | None = None
+    previous_observation: str | None = None
+    latest_radar_observation: str | None = None
+    latest_optical_observation: str | None = None
+    cloud_cover: float | None = None
+    status: Literal["AVAILABLE", "UNAVAILABLE"] = "UNAVAILABLE"
+    scope: str = "Area-level coverage context only; disturbance change model not run."
+
+
 class AnalysisResponse(BaseModel):
     location: dict[str, float]
     submitted_at: str
     aerial: AerialImage | None = None
     street_view: StreetViewImage | None = None
+    ground_context: GroundContextImage | None = None
     findings: VisionFindings
     warning_signs: list[str]
     score: int
@@ -89,6 +112,9 @@ class AreaCandidate(BaseModel):
     source: Literal["HRM_INVENTORY", "AERIAL_DETECTION"] = "HRM_INVENTORY"
     discovery_evidence: str | None = None
     street_view_available: bool = False
+    ground_context_provider: Literal["MAPILLARY", "GOOGLE_STREET_VIEW"] | None = None
+    ground_context_date: str | None = None
+    ground_context_freshness: Literal["RECENT", "AGING", "HISTORICAL", "UNKNOWN"] | None = None
 
 
 class AreaScreeningResponse(BaseModel):
@@ -98,5 +124,6 @@ class AreaScreeningResponse(BaseModel):
     inventory_candidates_found: int = 0
     aerial_candidates_found: int = 0
     aerial_discovery_status: str = "not_run"
+    satellite_context: SatelliteContext | None = None
     screened: list[AreaCandidate]
     disclaimer: str

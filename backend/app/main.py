@@ -16,6 +16,9 @@ from .priority import DISCLAIMER, hrm_signals, inspection_priority, recommendati
 from .vision import analyze_images, detect_aerial_trees
 from .streetview import bearing_to_target, get_street_view, get_street_view_image
 from .address import approximate_address
+from .ground_context import get_google_context, get_ground_context, get_ground_evidence
+from .mapillary import get_mapillary_image
+from .satellite import get_satellite_context
 
 load_dotenv()
 app = FastAPI(title="Halifax Tree Inspection Priority API")
@@ -64,6 +67,31 @@ async def streetview_image(latitude: float, longitude: float):
     return Response(content=body, media_type=content_type, headers={"Cache-Control": "private, max-age=3600"})
 
 
+@app.get("/api/ground-context")
+async def ground_context(latitude: float, longitude: float, google_fallback: bool = False):
+    if not valid_halifax_coordinate(latitude, longitude):
+        raise HTTPException(422, "Choose a location in the Halifax Regional Municipality.")
+    context, _ = await (get_google_context(latitude, longitude) if google_fallback else get_ground_context(latitude, longitude))
+    if not context:
+        raise HTTPException(404, "No nearby Mapillary or Google Street View image is available.")
+    return {
+        "provider": context.provider,
+        "source": context.source,
+        "captureDate": context.capture_date,
+        "imageUrl": context.image_url,
+        "freshness": context.freshness,
+    }
+
+
+@app.get("/api/mapillary/image/{image_id}")
+async def mapillary_image(image_id: str):
+    image = await get_mapillary_image(image_id)
+    if not image:
+        raise HTTPException(404, "Mapillary image unavailable.")
+    body, content_type = image
+    return Response(content=body, media_type=content_type, headers={"Cache-Control": "private, max-age=3600"})
+
+
 @app.get("/api/location/address")
 async def location_address(latitude: float, longitude: float):
     if not valid_halifax_coordinate(latitude, longitude):
@@ -84,9 +112,7 @@ async def tree_analysis(latitude: float = Form(...), longitude: float = Form(...
     if not image or len(image) > 15 * 1024 * 1024:
         raise HTTPException(422, "Use an image between 1 byte and 15 MB.")
     aerial = await get_aerial_image(latitude, longitude)
-    street_view = await get_street_view(latitude, longitude)
-    heading = bearing_to_target(street_view.panorama_latitude, street_view.panorama_longitude, latitude, longitude) if street_view else None
-    street_image = await get_street_view_image(street_view.panorama_id, heading) if street_view else None
+    ground_context, street_view, street_image = await get_ground_evidence(latitude, longitude)
     try:
         findings = await analyze_images(image, groundImage.content_type, aerial.image_url if aerial else None, street_image)
     except RuntimeError as error:
@@ -95,7 +121,8 @@ async def tree_analysis(latitude: float = Form(...), longitude: float = Form(...
     priority = inspection_priority(score)
     return AnalysisResponse(
         location={"latitude": latitude, "longitude": longitude}, submitted_at=datetime.now(timezone.utc).isoformat(),
-        aerial=aerial, street_view=street_view, findings=findings, warning_signs=signs, score=score, priority=priority,
+        aerial=aerial, street_view=street_view, ground_context=ground_context,
+        findings=findings, warning_signs=signs, score=score, priority=priority,
         recommendation=recommendation(priority), disclaimer=DISCLAIMER,
     )
 
@@ -110,6 +137,7 @@ async def area_screen(bounds: AreaBounds):
         total, trees = await public_trees(bounds)
     except RuntimeError as error:
         raise HTTPException(503, str(error)) from error
+    satellite_context = await get_satellite_context(bounds)
     aerial_locations: list[tuple[float, float, str]] = []
     discovery_status = "imagery_unavailable"
     area_aerial = await get_area_aerial_image(bounds)
@@ -136,14 +164,12 @@ async def area_screen(bounds: AreaBounds):
         return AreaScreeningResponse(
             bounds=bounds, candidates_found=0, candidate_source="Halifax Public Trees + GeoNOVA aerial discovery",
             inventory_candidates_found=total, aerial_candidates_found=len(aerial_locations), aerial_discovery_status=discovery_status,
-            screened=[], disclaimer=DISCLAIMER,
+            satellite_context=satellite_context, screened=[], disclaimer=DISCLAIMER,
         )
     candidates: list[AreaCandidate] = []
     for latitude, longitude, asset_id, fcode, wires, source, discovery_evidence in screening_targets:
         aerial = await get_aerial_image(latitude, longitude)
-        street_view = await get_street_view(latitude, longitude)
-        heading = bearing_to_target(street_view.panorama_latitude, street_view.panorama_longitude, latitude, longitude) if street_view else None
-        street_image = await get_street_view_image(street_view.panorama_id, heading) if street_view else None
+        ground_context, street_view, street_image = await get_ground_evidence(latitude, longitude)
         if not aerial and not street_image:
             continue
         try:
@@ -159,14 +185,17 @@ async def area_screen(bounds: AreaBounds):
             asset_id=asset_id, location={"latitude": latitude, "longitude": longitude}, priority=inspection_priority(score), score=score,
             warning_signs=signs, summary=findings.summary, confidence=findings.confidence,
             street_view_date=street_view.capture_date if street_view else None,
-            source=source, discovery_evidence=discovery_evidence, street_view_available=street_view is not None,
+            source=source, discovery_evidence=discovery_evidence, street_view_available=ground_context is not None,
+            ground_context_provider=ground_context.provider if ground_context else None,
+            ground_context_date=ground_context.capture_date if ground_context else None,
+            ground_context_freshness=ground_context.freshness if ground_context else None,
         ))
     priority_order = {"HIGH": 0, "MEDIUM": 1, "LOW": 2}
     candidates.sort(key=lambda item: (priority_order[item.priority.value], -item.score))
     return AreaScreeningResponse(
         bounds=bounds, candidates_found=total + len(aerial_locations), candidate_source="Halifax Public Trees + GeoNOVA aerial discovery",
         inventory_candidates_found=total, aerial_candidates_found=len(aerial_locations), aerial_discovery_status=discovery_status,
-        screened=candidates, disclaimer=DISCLAIMER,
+        satellite_context=satellite_context, screened=candidates, disclaimer=DISCLAIMER,
     )
 
 
