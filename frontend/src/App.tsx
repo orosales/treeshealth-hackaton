@@ -1,16 +1,21 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import L from 'leaflet'
+import { BadgeCheck, Camera, LocateFixed, MapPinned, RotateCcw, Satellite, ScanSearch, Search, TreePine } from 'lucide-react'
 import { MapPicker } from './MapPicker'
 import type { AerialContext, ApproximateAddress, AreaCandidate, AreaScreening, GroundContext, Result } from './types'
 
 const SCAN_STAGES = ['Finding Halifax public trees', 'Retrieving freshness-aware imagery', 'Screening visible evidence']
-const MapIcon = () => <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18-6 3V6l6-3 6 3 6-3v15l-6 3-6-3Z"/><path d="M9 3v15M15 6v15"/></svg>
-const ScanIcon = () => <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8V5a1 1 0 0 1 1-1h3M16 4h3a1 1 0 0 1 1 1v3M20 16v3a1 1 0 0 1-1 1h-3M8 20H5a1 1 0 0 1-1-1v-3"/><circle cx="12" cy="12" r="3"/></svg>
-const PinIcon = () => <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 10c0 5-8 12-8 12S4 15 4 10a8 8 0 1 1 16 0Z"/><circle cx="12" cy="10" r="2.5"/></svg>
-const CameraIcon = () => <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h3l1.5-2h7L17 7h3a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V8a1 1 0 0 1 1-1Z"/><circle cx="12" cy="13" r="4"/></svg>
+const MapIcon = MapPinned
+const ScanIcon = ScanSearch
+const PinIcon = MapPinned
+const CameraIcon = Camera
+const SearchIcon = Search
+const LocateIcon = LocateFixed
+interface LocationResult { label: string; latitude: number; longitude: number }
 
 export default function App() {
   const [location, setLocation] = useState<{ latitude: number; longitude: number } | null>(null)
+  const drawerRef = useRef<HTMLElement>(null)
   const [groundContext, setGroundContext] = useState<GroundContext | null>(null)
   const [groundContextStatus, setGroundContextStatus] = useState('')
   const [aerial, setAerial] = useState<AerialContext | null>(null)
@@ -27,6 +32,10 @@ export default function App() {
   const [fieldResult, setFieldResult] = useState<Result | null>(null)
   const [fieldLoading, setFieldLoading] = useState(false)
   const [fieldError, setFieldError] = useState('')
+  const [mapFocus, setMapFocus] = useState<{ latitude: number; longitude: number } | null>(null)
+  const [placeQuery, setPlaceQuery] = useState('')
+  const [placeResults, setPlaceResults] = useState<LocationResult[]>([])
+  const [placeLoading, setPlaceLoading] = useState(false)
   const fieldPreview = useMemo(() => fieldImage ? URL.createObjectURL(fieldImage) : '', [fieldImage])
 
   useEffect(() => () => { if (fieldPreview) URL.revokeObjectURL(fieldPreview) }, [fieldPreview])
@@ -58,10 +67,51 @@ export default function App() {
   }, [location, groundContext])
   const isSelectedCandidate = (candidate: AreaCandidate) => Boolean(location && Math.abs(location.latitude - candidate.location.latitude) < .000001 && Math.abs(location.longitude - candidate.location.longitude) < .000001)
   const selectedCandidate = areaScan?.screened.find(isSelectedCandidate)
+  useEffect(() => {
+    // Scroll only inside the drawer so the page (and the map popup) stays put
+    const drawer = drawerRef.current
+    const row = drawer?.querySelector<HTMLElement>('.lead-row.selected')
+    if (!drawer || !row || drawer.scrollHeight <= drawer.clientHeight) return
+    const rowTop = row.getBoundingClientRect().top - drawer.getBoundingClientRect().top + drawer.scrollTop
+    drawer.scrollTo({ top: rowTop - drawer.clientHeight / 2 + row.offsetHeight / 2, behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' })
+  }, [selectedCandidate])
   const counts = useMemo(() => areaScan?.screened.reduce((total, item) => ({ ...total, [item.priority]: total[item.priority] + 1 }), { HIGH: 0, MEDIUM: 0, LOW: 0 }) ?? { HIGH: 0, MEDIUM: 0, LOW: 0 }, [areaScan])
+  const areaSize = useMemo(() => {
+    if (areaCorners.length !== 2) return ''
+    const middleLatitude = (areaCorners[0].lat + areaCorners[1].lat) / 2
+    const middleLongitude = (areaCorners[0].lng + areaCorners[1].lng) / 2
+    const width = L.latLng(middleLatitude, areaCorners[0].lng).distanceTo(L.latLng(middleLatitude, areaCorners[1].lng))
+    const height = L.latLng(areaCorners[0].lat, middleLongitude).distanceTo(L.latLng(areaCorners[1].lat, middleLongitude))
+    const format = (metres: number) => metres >= 1000 ? `${(metres / 1000).toFixed(1)} km` : `${Math.round(metres)} m`
+    return `${format(width)} × ${format(height)}`
+  }, [areaCorners])
   const addAreaCorner = useCallback((corner: L.LatLng) => { setAreaCorners(previous => previous.length === 1 ? [previous[0], corner] : [corner]); setAreaScan(null); setError('') }, [])
+  const selectArea = useCallback((corners: L.LatLng[]) => { setAreaCorners(corners); setAreaScan(null); setError('') }, [])
   const beginArea = () => { setAreaMode(true); setAreaCorners([]); setAreaScan(null); setError('') }
   const cancelArea = () => { setAreaMode(false); setAreaCorners([]); setError('') }
+  const resetArea = () => { setAreaMode(true); setAreaCorners([]); setAreaScan(null); setError('') }
+
+  async function searchPlaces() {
+    if (placeQuery.trim().length < 2) { setError('Enter a Halifax neighbourhood or address.'); return }
+    setPlaceLoading(true); setError(''); setPlaceResults([])
+    try {
+      const response = await fetch(`/api/location/search?q=${encodeURIComponent(placeQuery.trim())}`)
+      const body = await response.json(); if (!response.ok) throw new Error(body.detail || 'Place search is unavailable.')
+      setPlaceResults(body.results || [])
+      if (!body.results?.length) setError('No matching place was found inside Halifax Regional Municipality.')
+    } catch (cause) { setError(cause instanceof Error ? cause.message : 'Place search is unavailable.') }
+    finally { setPlaceLoading(false) }
+  }
+
+  function useMyLocation() {
+    if (!navigator.geolocation) { setError('Location is not supported by this browser.'); return }
+    setError('')
+    navigator.geolocation.getCurrentPosition(position => {
+      const next = { latitude: position.coords.latitude, longitude: position.coords.longitude }
+      if (next.latitude < 44.3 || next.latitude > 45 || next.longitude < -64.1 || next.longitude > -63.3) { setError('Your current location is outside Halifax Regional Municipality.'); return }
+      setMapFocus(next); setPlaceQuery('Current location'); setPlaceResults([])
+    }, () => setError('Location access was unavailable. You can search for a Halifax place instead.'), { enableHighAccuracy: false, timeout: 8000 })
+  }
 
   async function screenArea() {
     if (areaCorners.length !== 2) { setError('Choose two opposite corners of a scan area.'); return }
@@ -90,7 +140,7 @@ export default function App() {
 
   return <main>
     <header className="app-header">
-      <div className="brand-mark"><span>H</span></div><div className="brand-copy"><p className="eyebrow">HALIFAX URBAN FOREST</p><h1>TreeSight</h1></div>
+      <div className="brand-mark"><TreePine aria-hidden="true" /></div><div className="brand-copy"><p className="eyebrow">HALIFAX URBAN FOREST</p><h1>TreeSight</h1></div>
       <div className="system-status"><i /> Screening system online</div>
     </header>
 
@@ -102,25 +152,33 @@ export default function App() {
           <div className="toolbar-heading"><span className="icon-box"><MapIcon /></span><div><h2>Screen an area</h2><p>Draw an area up to 5 km across, then select a lead.</p></div></div>
           <div className="area-actions">
             {!areaMode && <button className="primary-action" onClick={beginArea}><ScanIcon /> Draw scan area</button>}
-            {areaMode && <><div className="step-hint"><b>{areaCorners.length === 2 ? '✓' : areaCorners.length + 1}</b><span>{areaCorners.length === 0 ? 'Choose first corner' : areaCorners.length === 1 ? 'Choose opposite corner' : 'Area ready'}</span></div><button className="ghost-action" onClick={cancelArea}>Cancel</button><button className="primary-action" onClick={screenArea} disabled={areaLoading || areaCorners.length !== 2}><ScanIcon /> {areaLoading ? 'Screening…' : 'Screen area'}</button></>}
+            {areaMode && <><div className="step-hint"><b>{areaCorners.length === 2 ? '✓' : '↗'}</b><span>{areaCorners.length === 2 ? `${areaSize} selected` : 'Drag on the map or tap two corners'}</span></div><button className="ghost-action" onClick={cancelArea}>Cancel</button><button className="primary-action" onClick={screenArea} disabled={areaLoading || areaCorners.length !== 2}><ScanIcon /> {areaLoading ? 'Screening…' : 'Screen area'}</button></>}
           </div>
         </div>
-        <div className={`map-shell${areaMode ? ' drawing' : ''}`}>
-          <MapPicker location={location} onPick={chooseLocation} onCandidatePick={chooseCandidate} areaMode={areaMode} areaCorners={areaCorners} onAreaCorner={addAreaCorner} candidates={areaScan?.screened || []} />
-          {!areaScan && !areaMode && !areaLoading && <div className="map-tip"><span><PinIcon /></span><div><b>Start with an area</b><small>Draw a boundary to discover public trees.</small></div></div>}
-          {areaMode && <div className="drawing-status"><span>{areaCorners.length}/2</span> corners selected</div>}
-          {areaScan && <div className="source-legend"><b>Tree source</b><span><i className="inventory" /> HRM inventory</span><span><i className="aerial" /> Aerial discovery</span></div>}
+        <div className="map-utility-bar">
+          <form className="place-search" onSubmit={event => { event.preventDefault(); void searchPlaces() }}>
+            <SearchIcon /><input value={placeQuery} onChange={event => { setPlaceQuery(event.target.value); setPlaceResults([]) }} placeholder="Search neighbourhood or address" aria-label="Search Halifax neighbourhood or address" /><button type="submit" disabled={placeLoading}>{placeLoading ? 'Searching…' : 'Search'}</button>
+            {placeResults.length > 0 && <div className="place-results">{placeResults.map(result => <button type="button" key={`${result.latitude}-${result.longitude}`} onClick={() => { setMapFocus({ latitude: result.latitude, longitude: result.longitude }); setPlaceQuery(result.label.split(',')[0]); setPlaceResults([]) }}><PinIcon /><span>{result.label}</span></button>)}</div>}
+          </form>
+          <button className="utility-action" onClick={useMyLocation}><LocateIcon /> My location</button>
+          {(areaCorners.length > 0 || areaScan) && <button className="utility-action reset" onClick={resetArea}><RotateCcw aria-hidden="true" /> Reset area</button>}
         </div>
-        {areaLoading && <div className="scan-overlay" role="status"><div className="scan-card"><div className="scan-symbol"><ScanIcon /></div><p className="eyebrow">AREA SCAN IN PROGRESS</p><h2>{SCAN_STAGES[scanStage]}</h2><div className="scan-progress"><span style={{ width: `${[30, 62, 88][scanStage]}%` }} /></div><ol>{SCAN_STAGES.map((stage, index) => <li className={index < scanStage ? 'done' : index === scanStage ? 'active' : ''} key={stage}><i>{index < scanStage ? '✓' : index + 1}</i>{stage}</li>)}</ol></div></div>}
+        <div className={`map-shell${areaMode ? ' drawing' : ''}`}>
+          <MapPicker location={location} focusLocation={mapFocus} onPick={chooseLocation} onCandidatePick={chooseCandidate} areaMode={areaMode} areaCorners={areaCorners} onAreaCorner={addAreaCorner} onAreaSelection={selectArea} candidates={areaScan?.screened || []} />
+          {!areaScan && !areaMode && !areaLoading && <div className="map-tip"><span><PinIcon /></span><div><b>Start with an area</b><small>Draw a boundary to discover public trees.</small></div></div>}
+          {areaMode && <div className="drawing-status"><span>{areaCorners.length === 2 ? areaSize : 'Drag to draw'}</span>{areaCorners.length === 2 ? ' area selected' : ' · tap two corners also works'}</div>}
+          {areaScan && <div className="source-legend"><b>Tree source</b><span><i className="inventory" /> HRM inventory</span><span><i className="aerial" /> Aerial discovery</span></div>}
+          {areaLoading && <div className="scan-overlay" role="status"><div className="scan-card"><div className="scan-symbol"><ScanIcon /></div><p className="eyebrow">AREA SCAN IN PROGRESS</p><h2>{SCAN_STAGES[scanStage]}</h2><div className="scan-progress"><span style={{ width: `${[30, 62, 88][scanStage]}%` }} /></div><ol>{SCAN_STAGES.map((stage, index) => <li className={index < scanStage ? 'done' : index === scanStage ? 'active' : ''} key={stage}><i>{index < scanStage ? '✓' : index + 1}</i>{stage}</li>)}</ol></div></div>}
+        </div>
         {error && <p className="error" role="alert">{error}</p>}
       </div>
 
-      {areaScan && <aside className="lead-drawer" aria-live="polite">
+      {areaScan && <aside ref={drawerRef} className="lead-drawer" aria-live="polite">
         <div className="drawer-header"><div><p className="eyebrow">SCAN RESULTS</p><h2>Inspection leads</h2></div><span className="result-total">{areaScan.screened.length}</span></div>
         <div className="result-stats"><span><i className="high" />{counts.HIGH} high</span><span><i className="medium" />{counts.MEDIUM} medium</span><span><i className="low" />{counts.LOW} low</span></div>
         <p className="drawer-summary">{areaScan.inventory_candidates_found} HRM inventory trees · {areaScan.aerial_candidates_found} possible aerial discoveries.</p>
-        {areaScan.satellite_context?.status === 'AVAILABLE' && <div className="satellite-context"><span>RECENT AREA COVERAGE</span><b>{areaScan.satellite_context.latest_radar_observation ? `S1 radar ${new Date(areaScan.satellite_context.latest_radar_observation).toLocaleDateString()}` : 'S1 radar unavailable'} · {areaScan.satellite_context.latest_optical_observation ? `S2 optical ${new Date(areaScan.satellite_context.latest_optical_observation).toLocaleDateString()}` : 'S2 optical unavailable'}</b><small>{areaScan.satellite_context.cloud_cover == null ? 'Optical cloud estimate unavailable' : `${Math.round(areaScan.satellite_context.cloud_cover)}% optical cloud cover`} · change model not run</small></div>}
-        {areaScan.screened.length ? <ol>{areaScan.screened.map((candidate, index) => { const selected = isSelectedCandidate(candidate); const discovered = candidate.source === 'AERIAL_DETECTION'; const groundLabel = candidate.ground_context_provider === 'MAPILLARY' ? 'Mapillary' : 'Street View'; return <li key={`${candidate.location.latitude}-${candidate.location.longitude}`}><button className={`lead-row${selected ? ' selected' : ''}`} aria-pressed={selected} onClick={() => chooseCandidate(candidate)}><span className={`lead-number ${candidate.priority.toLowerCase()}${discovered ? ' aerial' : ''}`}>{index + 1}</span><span className="lead-copy"><span className="lead-title"><strong>{candidate.asset_id ? `Tree ${candidate.asset_id}` : `Aerial candidate ${index + 1}`}</strong><b className={`tag ${candidate.priority.toLowerCase()}`}>{candidate.priority}</b></span><span className="source-row"><em className={`source-badge ${discovered ? 'aerial' : 'inventory'}`}>{discovered ? 'Aerial discovery' : 'Official inventory'}</em>{candidate.street_view_available && <em className={`source-badge ${candidate.ground_context_provider === 'MAPILLARY' ? 'mapillary' : 'street'}`}>{groundLabel}</em>}</span><small>{candidate.summary}</small>{selected && <em className="selected-label"><PinIcon /> Selected on map</em>}</span><span className="row-arrow">›</span></button></li> })}</ol> : <div className="empty-state"><MapIcon /><b>No tree candidates found</b><p>Try drawing another area near a public street.</p></div>}
+        {areaScan.satellite_context?.status === 'AVAILABLE' && <div className="satellite-context"><Satellite aria-hidden="true" /><span>RECENT AREA COVERAGE</span><b>{areaScan.satellite_context.latest_radar_observation ? `S1 radar ${new Date(areaScan.satellite_context.latest_radar_observation).toLocaleDateString()}` : 'S1 radar unavailable'} · {areaScan.satellite_context.latest_optical_observation ? `S2 optical ${new Date(areaScan.satellite_context.latest_optical_observation).toLocaleDateString()}` : 'S2 optical unavailable'}</b><small>{areaScan.satellite_context.cloud_cover == null ? 'Optical cloud estimate unavailable' : `${Math.round(areaScan.satellite_context.cloud_cover)}% optical cloud cover`} · change model not run</small></div>}
+        {areaScan.screened.length ? <ol>{areaScan.screened.map((candidate, index) => { const selected = isSelectedCandidate(candidate); const discovered = candidate.source === 'AERIAL_DETECTION'; const groundLabel = candidate.ground_context_provider === 'MAPILLARY' ? 'Mapillary' : 'Street View'; return <li key={`${candidate.location.latitude}-${candidate.location.longitude}`}><button className={`lead-row${selected ? ' selected' : ''}`} aria-pressed={selected} onClick={() => chooseCandidate(candidate)}><span className={`lead-number ${candidate.priority.toLowerCase()}${discovered ? ' aerial' : ''}`}><TreePine aria-hidden="true" /><small>{index + 1}</small></span><span className="lead-copy"><span className="lead-title"><strong>{candidate.asset_id ? `Tree ${candidate.asset_id}` : `Aerial candidate ${index + 1}`}</strong><b className={`tag ${candidate.priority.toLowerCase()}`}>{candidate.priority}</b></span><span className="source-row"><em className={`source-badge ${discovered ? 'aerial' : 'inventory'}`}>{discovered ? <ScanSearch aria-label="Aerial discovery" /> : <BadgeCheck aria-label="Official inventory" />}{discovered ? 'Aerial discovery' : 'Official inventory'}</em>{candidate.street_view_available && <em className={`source-badge ${candidate.ground_context_provider === 'MAPILLARY' ? 'mapillary' : 'street'}`}><Camera aria-hidden="true" />{groundLabel}</em>}</span><small>{candidate.summary}</small>{selected && <em className="selected-label"><PinIcon /> Selected on map</em>}</span><span className="row-arrow">›</span></button></li> })}</ol> : <div className="empty-state"><MapIcon /><b>No tree candidates found</b><p>Try drawing another area near a public street.</p></div>}
       </aside>}
     </section>
 

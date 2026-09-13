@@ -15,7 +15,7 @@ from .area import MAX_AERIAL_CANDIDATES, MAX_CANDIDATES, aerial_candidate_locati
 from .priority import DISCLAIMER, hrm_signals, inspection_priority, recommendation, score_findings
 from .vision import analyze_images, detect_aerial_trees
 from .streetview import bearing_to_target, get_street_view, get_street_view_image
-from .address import approximate_address
+from .address import approximate_address, search_halifax_locations
 from .ground_context import get_google_context, get_ground_context, get_ground_evidence
 from .mapillary import get_mapillary_image
 from .satellite import get_satellite_context
@@ -100,6 +100,13 @@ async def location_address(latitude: float, longitude: float):
     if not address:
         raise HTTPException(404, "An approximate street address is unavailable for this tree point.")
     return {"address": address, "label": "Approximate nearest address"}
+
+
+@app.get("/api/location/search")
+async def location_search(q: str):
+    if len(q.strip()) < 2 or len(q) > 100:
+        raise HTTPException(422, "Enter at least two characters of a Halifax place or address.")
+    return {"results": await search_halifax_locations(q)}
 
 
 @app.post("/api/tree-analysis", response_model=AnalysisResponse)

@@ -159,7 +159,9 @@ If persistence is required:
 ### Area Screening Flow — Hybrid Discovery
 
 ```text
-User draws an area (up to about 5 km across)
+User searches/focuses a Halifax place (optional)
+        ↓
+User drags a rectangle (or taps two corners) up to about 5 km across
         ↓
 Backend queries Halifax Public Trees FeatureServer by bounding box
         ↓
@@ -181,7 +183,12 @@ evidence for the separate single-tree confirmation flow.
 
 ### Step 1 — Select Location
 
-The user clicks the map.
+The user can search for a Halifax neighbourhood/address, use browser location,
+or navigate the map manually. Area mode disables map panning while the user
+drags a rectangle; two taps remain an accessible fallback. The UI displays the
+rectangle's width and height before the scan begins.
+
+For individual context, the user clicks the map.
 
 Frontend captures:
 
@@ -419,6 +426,12 @@ Response:
 ```
 
 This endpoint can also proxy the image if direct browser access creates CORS issues.
+
+### GET /api/location/search
+
+Accepts a bounded Halifax place/address query and proxies Nominatim results from
+the backend. Results contain a display label and coordinates; selecting one only
+focuses the map and does not start an imagery or AI request.
 
 ### GET /api/health
 
