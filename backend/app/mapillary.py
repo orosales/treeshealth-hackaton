@@ -9,23 +9,30 @@ import httpx
 from .models import GroundContextImage
 
 GRAPH_URL = "https://graph.mapillary.com"
+FACING_MAX_AGE_GAP_MS = 365 * 24 * 60 * 60 * 1000
 
 
 def _token() -> str | None:
     return os.getenv("MAPILLARY_ACCESS_TOKEN")
 
 
-def freshness_for_date(capture_date: str | None) -> str:
+def parse_capture_date(capture_date: str | None) -> datetime | None:
+    """Parse Mapillary ISO timestamps and Google month-precision dates ("2019-07")."""
     if not capture_date:
-        return "UNKNOWN"
+        return None
     try:
         normalized = capture_date + "-01" if len(capture_date) == 7 else capture_date
         captured = datetime.fromisoformat(normalized.replace("Z", "+00:00"))
-        if captured.tzinfo is None:
-            captured = captured.replace(tzinfo=timezone.utc)
-        age_days = (datetime.now(timezone.utc) - captured).days
     except (ValueError, TypeError):
+        return None
+    return captured.replace(tzinfo=timezone.utc) if captured.tzinfo is None else captured
+
+
+def freshness_for_date(capture_date: str | None) -> str:
+    captured = parse_capture_date(capture_date)
+    if not captured:
         return "UNKNOWN"
+    age_days = (datetime.now(timezone.utc) - captured).days
     if age_days <= 365:
         return "RECENT"
     if age_days <= 3 * 365:
@@ -62,7 +69,8 @@ async def get_mapillary_context(latitude: float, longitude: float, radius_m: flo
         "access_token": token,
         "bbox": f"{longitude-lon_delta},{latitude-lat_delta},{longitude+lon_delta},{latitude+lat_delta}",
         "fields": "id,captured_at,geometry,compass_angle",
-        "limit": 50,
+        # Results are unsorted, so fetch the API maximum to avoid missing newer captures
+        "limit": 2000,
     }
     try:
         async with httpx.AsyncClient(timeout=10) as client:
@@ -74,8 +82,13 @@ async def get_mapillary_context(latitude: float, longitude: float, radius_m: flo
     candidates = [item for item in images if item.get("id") and item.get("captured_at")]
     if not candidates:
         return None
+    newest = max(candidates, key=lambda item: item["captured_at"])
     tree_facing = [item for item in candidates if _faces_target(item, latitude, longitude)]
-    newest = max(tree_facing or candidates, key=lambda item: item["captured_at"])
+    if tree_facing:
+        newest_facing = max(tree_facing, key=lambda item: item["captured_at"])
+        # Prefer a tree-facing view unless it is more than a year older than the newest capture
+        if newest["captured_at"] - newest_facing["captured_at"] <= FACING_MAX_AGE_GAP_MS:
+            newest = newest_facing
     captured = datetime.fromtimestamp(newest["captured_at"] / 1000, tz=timezone.utc).isoformat()
     coordinates = (newest.get("geometry") or {}).get("coordinates") or [None, None]
     return GroundContextImage(

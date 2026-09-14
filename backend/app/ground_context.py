@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from .mapillary import freshness_for_date, get_mapillary_context, get_mapillary_image
+import asyncio
+
+from .mapillary import freshness_for_date, get_mapillary_context, get_mapillary_image, parse_capture_date
 from .models import GroundContextImage, StreetViewImage
 from .streetview import bearing_to_target, get_street_view, get_street_view_image
 
@@ -20,11 +22,15 @@ def google_context(street_view: StreetViewImage, latitude: float, longitude: flo
 
 
 async def get_ground_context(latitude: float, longitude: float) -> tuple[GroundContextImage | None, StreetViewImage | None]:
-    mapillary = await get_mapillary_context(latitude, longitude)
-    if mapillary:
-        return mapillary, None
-    street_view = await get_street_view(latitude, longitude)
-    return (google_context(street_view, latitude, longitude), street_view) if street_view else (None, None)
+    """Query both providers and return whichever image was captured most recently."""
+    mapillary, street_view = await asyncio.gather(get_mapillary_context(latitude, longitude), get_street_view(latitude, longitude))
+    google = google_context(street_view, latitude, longitude) if street_view else None
+    if not mapillary or not google:
+        return (mapillary, None) if mapillary else (google, street_view)
+    mapillary_date, google_date = parse_capture_date(mapillary.capture_date), parse_capture_date(google.capture_date)
+    if google_date and (not mapillary_date or google_date > mapillary_date):
+        return google, street_view
+    return mapillary, None
 
 
 async def get_google_context(latitude: float, longitude: float) -> tuple[GroundContextImage | None, StreetViewImage | None]:
